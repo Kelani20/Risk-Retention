@@ -19,6 +19,7 @@ def test_list_customers_returns_dashboard_fields_and_pagination(client):
     assert payload["page"] == 1
     assert payload["page_size"] == 25
     assert payload["total"] == 7043
+    assert payload["total_pages"] == 282
     assert len(payload["items"]) == 25
     assert {
         "customerID",
@@ -40,6 +41,15 @@ def test_list_customers_applies_actual_paging(client):
     second_ids = [item["customerID"] for item in second["items"]]
     assert len(first_ids) == len(second_ids) == 5
     assert set(first_ids).isdisjoint(second_ids)
+
+
+def test_list_customers_reports_zero_pages_when_filters_match_nothing(client):
+    response = client.get("/customers", params={"contract": "Not a real contract"})
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 0
+    assert response.json()["total_pages"] == 0
+    assert response.json()["items"] == []
 
 
 def test_list_customers_sorts_by_score_descending_then_customer_id(client):
@@ -96,7 +106,11 @@ def test_customer_detail_returns_normalized_complete_record(client):
     assert isinstance(customer["risk_factors"], list)
     assert customer["outreach_status"] == "NOT_CONTACTED"
     assert customer["allowed_next_status"] == "IN_PROGRESS"
-    assert {"gender", "InternetService", "Churn"} <= customer.keys()
+    assert customer["gender"] == "Female"
+    assert customer["InternetService"] == "DSL"
+    assert customer["Contract"] == "Month-to-month"
+    assert customer["Churn"] == "No"
+    assert all(factor["name"].lower() != "churn" for factor in customer["risk_factors"])
 
 
 def test_blank_total_charges_is_normalized_to_none(client):
@@ -188,6 +202,101 @@ def test_unexpected_failure_is_generic_and_logs_request_fields(caplog):
     assert "path=/unexpected-test-error" in failure_log
     assert "status_code=500" in failure_log
     assert "duration_ms=" in failure_log
+
+
+def test_successful_request_log_contains_required_fields(client, caplog):
+    with caplog.at_level("INFO", logger="backend.app.main"):
+        response = client.get("/model/info")
+
+    assert response.status_code == 200
+    request_log = "\n".join(record.getMessage() for record in caplog.records)
+    assert "method=GET" in request_log
+    assert "path=/model/info" in request_log
+    assert "status_code=200" in request_log
+    assert "duration_ms=" in request_log
+
+
+@pytest.mark.parametrize(
+    "origin",
+    ["http://localhost:5173", "https://retention.usamakelani.com"],
+)
+def test_cors_allows_configured_frontend_origins(client, origin):
+    response = client.options(
+        "/customers",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+
+
+def test_default_dataset_path_is_independent_of_working_directory(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+
+    with TestClient(create_app()) as test_client:
+        response = test_client.get("/customers", params={"page_size": 1})
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 7043
+
+
+def test_customer_data_loads_once_when_lifespan_starts(monkeypatch):
+    from backend.app import main as main_module
+
+    real_load_customers = main_module.load_customers
+    load_calls = 0
+
+    def counted_load(path):
+        nonlocal load_calls
+        load_calls += 1
+        return real_load_customers(path)
+
+    monkeypatch.setattr(main_module, "load_customers", counted_load)
+    api = create_app()
+    assert load_calls == 0
+
+    with TestClient(api) as test_client:
+        assert test_client.get("/customers").status_code == 200
+        assert test_client.get("/model/info").status_code == 200
+        assert load_calls == 1
+
+    assert load_calls == 1
+
+
+def test_startup_rejects_missing_required_column(tmp_path):
+    csv_path = tmp_path / "customers.csv"
+    csv_path.write_text(
+        "customerID,SeniorCitizen,tenure,MonthlyCharges,TotalCharges,Contract,"
+        "TechSupport,OnlineSecurity\n"
+        "TEST-001,0,1,10,10,Month-to-month,No,No\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="missing required columns"):
+        with TestClient(create_app(csv_path)):
+            pass
+
+
+@pytest.mark.parametrize("monthly_charges", ["not-a-number", "nan", "inf"])
+def test_startup_rejects_invalid_or_non_finite_numeric_values(
+    tmp_path, monthly_charges
+):
+    csv_path = tmp_path / "customers.csv"
+    csv_path.write_text(
+        "customerID,SeniorCitizen,tenure,MonthlyCharges,TotalCharges,Contract,"
+        "TechSupport,OnlineSecurity,PaymentMethod\n"
+        f"TEST-001,0,1,{monthly_charges},10,Month-to-month,No,No,Electronic check\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="unusable data"):
+        with TestClient(create_app(csv_path)):
+            pass
 
 
 def test_startup_rejects_blank_required_categorical_value(tmp_path):

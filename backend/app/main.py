@@ -133,6 +133,7 @@ def create_app(data_path: Path | None = None) -> FastAPI:
                 for customer in selected
             ],
             "total": total,
+            "total_pages": (total + page_size - 1) // page_size,
             "page": page,
             "page_size": page_size,
         }
