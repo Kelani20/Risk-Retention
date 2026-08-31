@@ -1,7 +1,76 @@
+import csv
+import logging
+from io import StringIO
+
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app.main import create_app
+from backend.app.main import create_app, logger
+
+
+TELCO_COLUMNS = (
+    "customerID",
+    "gender",
+    "SeniorCitizen",
+    "Partner",
+    "Dependents",
+    "tenure",
+    "PhoneService",
+    "MultipleLines",
+    "InternetService",
+    "OnlineSecurity",
+    "OnlineBackup",
+    "DeviceProtection",
+    "TechSupport",
+    "StreamingTV",
+    "StreamingMovies",
+    "Contract",
+    "PaperlessBilling",
+    "PaymentMethod",
+    "MonthlyCharges",
+    "TotalCharges",
+    "Churn",
+)
+
+VALID_CUSTOMER = {
+    "customerID": "TEST-001",
+    "gender": "Female",
+    "SeniorCitizen": "0",
+    "Partner": "No",
+    "Dependents": "No",
+    "tenure": "1",
+    "PhoneService": "Yes",
+    "MultipleLines": "No",
+    "InternetService": "DSL",
+    "OnlineSecurity": "No",
+    "OnlineBackup": "No",
+    "DeviceProtection": "No",
+    "TechSupport": "No",
+    "StreamingTV": "No",
+    "StreamingMovies": "No",
+    "Contract": "Month-to-month",
+    "PaperlessBilling": "Yes",
+    "PaymentMethod": "Electronic check",
+    "MonthlyCharges": "10",
+    "TotalCharges": "10",
+    "Churn": "No",
+}
+
+
+def write_customer_csv(path, *, overrides=None, columns=TELCO_COLUMNS):
+    record = dict(VALID_CUSTOMER)
+    record.update(overrides or {})
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerow(record)
+
+
+def formatted_log_stream():
+    stream = StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
+    return stream, handler
 
 
 @pytest.fixture
@@ -184,36 +253,73 @@ def test_model_info_matches_the_configuration_used_for_scoring(client):
     )
 
 
-def test_unexpected_failure_is_generic_and_logs_request_fields(caplog):
+def test_unexpected_failure_log_redacts_dynamic_path_and_exception_details():
     api = create_app()
 
-    @api.get("/unexpected-test-error")
-    async def unexpected_test_error():
-        raise RuntimeError("sensitive internal detail")
+    @api.get("/customers/{customer_id}/unexpected-test-error")
+    async def unexpected_test_error(customer_id: str):
+        raise RuntimeError(f"secret failure for {customer_id}")
 
-    with TestClient(api, raise_server_exceptions=False) as test_client:
-        with caplog.at_level("ERROR", logger="backend.app.main"):
-            response = test_client.get("/unexpected-test-error")
+    stream, handler = formatted_log_stream()
+    logger.addHandler(handler)
+    try:
+        with TestClient(api, raise_server_exceptions=False) as test_client:
+            response = test_client.get(
+                "/customers/SENSITIVE-CUSTOMER-ID/unexpected-test-error"
+            )
+    finally:
+        logger.removeHandler(handler)
 
     assert response.status_code == 500
     assert response.json() == {"detail": "Internal server error"}
-    failure_log = "\n".join(record.getMessage() for record in caplog.records)
-    assert "method=GET" in failure_log
-    assert "path=/unexpected-test-error" in failure_log
-    assert "status_code=500" in failure_log
-    assert "duration_ms=" in failure_log
+    formatted_logs = stream.getvalue()
+    assert "method=GET" in formatted_logs
+    assert "route=/customers/{customer_id}/unexpected-test-error" in formatted_logs
+    assert "status_code=500" in formatted_logs
+    assert "duration_ms=" in formatted_logs
+    assert "SENSITIVE-CUSTOMER-ID" not in formatted_logs
+    assert "secret failure" not in formatted_logs
+    assert "RuntimeError" not in formatted_logs
+    assert "Traceback" not in formatted_logs
 
 
-def test_successful_request_log_contains_required_fields(client, caplog):
-    with caplog.at_level("INFO", logger="backend.app.main"):
-        response = client.get("/model/info")
+def test_info_request_log_emits_by_default_and_uses_route_template(client):
+    stream, handler = formatted_log_stream()
+    logger.addHandler(handler)
+    try:
+        response = client.get("/customers/7590-VHVEG")
+    finally:
+        logger.removeHandler(handler)
 
     assert response.status_code == 200
-    request_log = "\n".join(record.getMessage() for record in caplog.records)
-    assert "method=GET" in request_log
-    assert "path=/model/info" in request_log
-    assert "status_code=200" in request_log
-    assert "duration_ms=" in request_log
+    formatted_logs = stream.getvalue()
+    assert "method=GET" in formatted_logs
+    assert "route=/customers/{customer_id}" in formatted_logs
+    assert "status_code=200" in formatted_logs
+    assert "duration_ms=" in formatted_logs
+    assert "7590-VHVEG" not in formatted_logs
+
+
+@pytest.mark.parametrize(
+    "origin",
+    ["http://localhost:5173", "https://retention.usamakelani.com"],
+)
+def test_unexpected_500_includes_cors_header_for_allowed_origins(origin):
+    api = create_app()
+
+    @api.get("/customers/{customer_id}/unexpected-test-error")
+    async def unexpected_test_error(customer_id: str):
+        raise RuntimeError("failure")
+
+    with TestClient(api, raise_server_exceptions=False) as test_client:
+        response = test_client.get(
+            "/customers/TEST-001/unexpected-test-error",
+            headers={"Origin": origin},
+        )
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Internal server error"}
+    assert response.headers["access-control-allow-origin"] == origin
 
 
 @pytest.mark.parametrize(
@@ -270,11 +376,9 @@ def test_customer_data_loads_once_when_lifespan_starts(monkeypatch):
 
 def test_startup_rejects_missing_required_column(tmp_path):
     csv_path = tmp_path / "customers.csv"
-    csv_path.write_text(
-        "customerID,SeniorCitizen,tenure,MonthlyCharges,TotalCharges,Contract,"
-        "TechSupport,OnlineSecurity\n"
-        "TEST-001,0,1,10,10,Month-to-month,No,No\n",
-        encoding="utf-8",
+    write_customer_csv(
+        csv_path,
+        columns=tuple(column for column in TELCO_COLUMNS if column != "gender"),
     )
 
     with pytest.raises(RuntimeError, match="missing required columns"):
@@ -287,12 +391,7 @@ def test_startup_rejects_invalid_or_non_finite_numeric_values(
     tmp_path, monthly_charges
 ):
     csv_path = tmp_path / "customers.csv"
-    csv_path.write_text(
-        "customerID,SeniorCitizen,tenure,MonthlyCharges,TotalCharges,Contract,"
-        "TechSupport,OnlineSecurity,PaymentMethod\n"
-        f"TEST-001,0,1,{monthly_charges},10,Month-to-month,No,No,Electronic check\n",
-        encoding="utf-8",
-    )
+    write_customer_csv(csv_path, overrides={"MonthlyCharges": monthly_charges})
 
     with pytest.raises(RuntimeError, match="unusable data"):
         with TestClient(create_app(csv_path)):
@@ -301,12 +400,7 @@ def test_startup_rejects_invalid_or_non_finite_numeric_values(
 
 def test_startup_rejects_blank_required_categorical_value(tmp_path):
     csv_path = tmp_path / "customers.csv"
-    csv_path.write_text(
-        "customerID,SeniorCitizen,tenure,MonthlyCharges,TotalCharges,Contract,"
-        "TechSupport,OnlineSecurity,PaymentMethod\n"
-        "TEST-001,0,1,10,10,Month-to-month,,No,Electronic check\n",
-        encoding="utf-8",
-    )
+    write_customer_csv(csv_path, overrides={"TechSupport": ""})
 
     with pytest.raises(RuntimeError, match="unusable data"):
         with TestClient(create_app(csv_path)):
@@ -315,12 +409,47 @@ def test_startup_rejects_blank_required_categorical_value(tmp_path):
 
 def test_startup_rejects_structurally_malformed_csv(tmp_path):
     csv_path = tmp_path / "customers.csv"
+    values = [VALID_CUSTOMER[column] for column in TELCO_COLUMNS[:-1]]
     csv_path.write_text(
-        "customerID,SeniorCitizen,tenure,MonthlyCharges,TotalCharges,Contract,"
-        "TechSupport,OnlineSecurity,PaymentMethod\n"
-        'TEST-001,0,1,10,10,Month-to-month,No,No,"Electronic check\n',
+        f'{",".join(TELCO_COLUMNS)}\n{",".join(values)},"No\n',
         encoding="utf-8",
     )
+
+    with pytest.raises(RuntimeError, match="unusable data"):
+        with TestClient(create_app(csv_path)):
+            pass
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("Contract", "Monthly"),
+        ("TechSupport", "no"),
+        ("OnlineSecurity", "None"),
+        ("PaymentMethod", "Crypto"),
+    ],
+)
+def test_startup_rejects_invalid_score_category(tmp_path, field, invalid_value):
+    csv_path = tmp_path / "customers.csv"
+    write_customer_csv(csv_path, overrides={field: invalid_value})
+
+    with pytest.raises(RuntimeError, match="unusable data"):
+        with TestClient(create_app(csv_path)):
+            pass
+
+
+def test_startup_normalizes_invalid_utf8_to_runtime_error(tmp_path):
+    csv_path = tmp_path / "customers.csv"
+    csv_path.write_bytes(b"\xff\xfe\xfa")
+
+    with pytest.raises(RuntimeError, match="unusable data"):
+        with TestClient(create_app(csv_path)):
+            pass
+
+
+def test_startup_normalizes_malformed_header_to_runtime_error(tmp_path):
+    csv_path = tmp_path / "customers.csv"
+    csv_path.write_text('"customerID,gender\n', encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="unusable data"):
         with TestClient(create_app(csv_path)):

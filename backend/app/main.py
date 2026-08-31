@@ -20,7 +20,8 @@ from .store import (
 )
 
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn.error")
+logger.setLevel(logging.INFO)
 
 DEFAULT_CORS_ORIGINS = [
     "http://localhost:5173",
@@ -45,6 +46,11 @@ def _serialize_customer(
     return serialized
 
 
+def _route_template(request: Request) -> str:
+    route = request.scope.get("route")
+    return getattr(route, "path", "<unmatched>")
+
+
 def create_app(data_path: Path | None = None) -> FastAPI:
     source_path = data_path or DATA_PATH
 
@@ -59,13 +65,6 @@ def create_app(data_path: Path | None = None) -> FastAPI:
     for origin in os.getenv("RETENTION_CORS_ORIGINS", "").split(","):
         if origin.strip() and origin.strip() not in origins:
             origins.append(origin.strip())
-    api.add_middleware(
-        CORSMiddleware,
-        allow_origins=origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
 
     @api.middleware("http")
     async def log_request(request: Request, call_next):
@@ -73,29 +72,34 @@ def create_app(data_path: Path | None = None) -> FastAPI:
         try:
             response = await call_next(request)
         except Exception:
-            logger.exception(
-                "Unhandled request failure method=%s path=%s status_code=500 duration_ms=%.2f",
+            logger.error(
+                "request_failed method=%s route=%s status_code=500 duration_ms=%.2f",
                 request.method,
-                request.url.path,
+                _route_template(request),
                 (perf_counter() - started) * 1000,
             )
-            raise
+            return JSONResponse(
+                status_code=500, content={"detail": "Internal server error"}
+            )
         duration_ms = (perf_counter() - started) * 1000
         log = logger.error if response.status_code >= 500 else logger.info
         log(
-            "request method=%s path=%s status_code=%d duration_ms=%.2f",
+            "request method=%s route=%s status_code=%d duration_ms=%.2f",
             request.method,
-            request.url.path,
+            _route_template(request),
             response.status_code,
             duration_ms,
         )
         return response
 
-    @api.exception_handler(Exception)
-    async def unexpected_error_handler(request: Request, exc: Exception):
-        return JSONResponse(
-            status_code=500, content={"detail": "Internal server error"}
-        )
+    # CORS must wrap the error boundary so generated 500 responses receive headers.
+    api.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     @api.get("/customers")
     async def list_customers(

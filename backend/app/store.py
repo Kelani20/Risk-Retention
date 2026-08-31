@@ -13,16 +13,42 @@ DATA_PATH = (
     / "WA_Fn-UseC_-Telco-Customer-Churn.csv"
 )
 
-REQUIRED_COLUMNS = {
+TELCO_COLUMNS = (
     "customerID",
+    "gender",
     "SeniorCitizen",
+    "Partner",
+    "Dependents",
     "tenure",
+    "PhoneService",
+    "MultipleLines",
+    "InternetService",
+    "OnlineSecurity",
+    "OnlineBackup",
+    "DeviceProtection",
+    "TechSupport",
+    "StreamingTV",
+    "StreamingMovies",
+    "Contract",
+    "PaperlessBilling",
+    "PaymentMethod",
     "MonthlyCharges",
     "TotalCharges",
-    "Contract",
-    "TechSupport",
-    "OnlineSecurity",
-    "PaymentMethod",
+    "Churn",
+)
+
+REQUIRED_COLUMNS = set(TELCO_COLUMNS)
+
+SCORE_CATEGORY_DOMAINS = {
+    "Contract": {"Month-to-month", "One year", "Two year"},
+    "TechSupport": {"Yes", "No", "No internet service"},
+    "OnlineSecurity": {"Yes", "No", "No internet service"},
+    "PaymentMethod": {
+        "Electronic check",
+        "Mailed check",
+        "Bank transfer (automatic)",
+        "Credit card (automatic)",
+    },
 }
 
 
@@ -77,19 +103,20 @@ def load_customers(path: Path = DATA_PATH) -> dict[str, dict[str, Any]]:
     except OSError as exc:
         raise RuntimeError(f"Unable to load customer data from {path}") from exc
 
-    with handle:
-        reader = csv.DictReader(handle, strict=True)
-        fieldnames = reader.fieldnames
-        if not fieldnames or len(fieldnames) != len(set(fieldnames)):
-            raise RuntimeError("Customer CSV has missing or duplicate headers")
-        missing = REQUIRED_COLUMNS.difference(fieldnames)
-        if missing:
-            raise RuntimeError(
-                f"Customer CSV is missing required columns: {', '.join(sorted(missing))}"
-            )
+    try:
+        with handle:
+            reader = csv.DictReader(handle, strict=True)
+            fieldnames = reader.fieldnames
+            if not fieldnames or len(fieldnames) != len(set(fieldnames)):
+                raise RuntimeError("Customer CSV has missing or duplicate headers")
+            missing = REQUIRED_COLUMNS.difference(fieldnames)
+            if missing:
+                raise RuntimeError(
+                    "Customer CSV is missing required columns: "
+                    f"{', '.join(sorted(missing))}"
+                )
 
-        customers: dict[str, dict[str, Any]] = {}
-        try:
+            customers: dict[str, dict[str, Any]] = {}
             for row_number, row in enumerate(reader, start=2):
                 if None in row or any(value is None for value in row.values()):
                     raise ValueError(f"Malformed customer CSV row {row_number}")
@@ -103,6 +130,11 @@ def load_customers(path: Path = DATA_PATH) -> dict[str, dict[str, Any]]:
                         f"Blank required value on CSV row {row_number}: "
                         f"{', '.join(blank_required)}"
                     )
+                for field, allowed_values in SCORE_CATEGORY_DOMAINS.items():
+                    if row[field] not in allowed_values:
+                        raise ValueError(
+                            f"Invalid {field} on CSV row {row_number}: {row[field]}"
+                        )
                 customer_id = row["customerID"]
                 if customer_id in customers:
                     raise ValueError(f"Duplicate customerID on CSV row {row_number}")
@@ -131,8 +163,8 @@ def load_customers(path: Path = DATA_PATH) -> dict[str, dict[str, Any]]:
                 record["risk_factors"] = risk.factors
                 record["outreach_status"] = OutreachStatus.NOT_CONTACTED
                 customers[customer_id] = record
-        except (csv.Error, ValueError, KeyError) as exc:
-            raise RuntimeError(f"Customer CSV contains unusable data: {exc}") from exc
+    except (csv.Error, UnicodeError, ValueError, KeyError) as exc:
+        raise RuntimeError(f"Customer CSV contains unusable data: {exc}") from exc
 
     if not customers:
         raise RuntimeError("Customer CSV contains no customer records")
