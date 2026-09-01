@@ -40,17 +40,23 @@ export default function App() {
   const loadDashboard = useCallback(async (currentQuery: CustomerQuery) => {
     dashboardController.current?.abort();
     const controller = new AbortController();
+    let redirectingPage = false;
     dashboardController.current = controller;
     setDashboardLoading(true);
     setDashboardError(null);
     setCustomers(null);
     try {
       const response = await getCustomers(currentQuery, controller.signal);
-      if (!controller.signal.aborted) setCustomers(response);
+      if (!controller.signal.aborted && response.total > 0 && response.total_pages > 0 && currentQuery.page > response.total_pages) {
+        redirectingPage = true;
+        setQuery((latestQuery) => latestQuery === currentQuery ? { ...latestQuery, page: response.total_pages } : latestQuery);
+      } else if (!controller.signal.aborted) {
+        setCustomers(response);
+      }
     } catch (error) {
       if (!isAbort(error)) setDashboardError(messageFrom(error, "The customer queue could not be loaded."));
     } finally {
-      if (!controller.signal.aborted) {
+      if (!controller.signal.aborted && !redirectingPage) {
         setDashboardLoading(false);
         setDashboardInitialized(true);
       }
