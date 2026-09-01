@@ -108,7 +108,7 @@ At startup, missing, malformed, duplicate, or invalid CSV data fails closed inst
 From the repository root:
 
 ```powershell
-python -m pytest backend/tests -q
+.\.venv\Scripts\python.exe -m pytest backend\tests -q
 Set-Location frontend
 npm ci
 npm run build
