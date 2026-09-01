@@ -99,7 +99,7 @@ Outreach is a forward-only state machine:
 NOT_CONTACTED -> IN_PROGRESS -> RESOLVED
 ```
 
-Skipping or reversing a state returns `409 Conflict`; malformed statuses return `422`, invalid pagination returns `400`, and missing customers return `404`. The frontend validates response shapes, aborts superseded reads, and presents loading, empty, retryable error, and mutation-error states.
+Skipping or reversing a state returns `409 Conflict`; malformed statuses return `422`, and missing customers return `404`. Out-of-range pagination integers (`page` below 1 or `page_size` outside 1-100) return `400`, while malformed pagination query types are rejected by FastAPI/Pydantic with `422`. The frontend validates response shapes, aborts superseded reads, and presents loading, empty, retryable error, and mutation-error states.
 
 At startup, missing, malformed, duplicate, or invalid CSV data fails closed instead of serving partial results. Unexpected server failures return only `{"detail":"Internal server error"}`. Request logs contain method, route template, status, and duration; they omit customer IDs, exception text, and tracebacks to avoid leaking record or internal details.
 
