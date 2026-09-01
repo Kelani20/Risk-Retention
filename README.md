@@ -2,7 +2,12 @@
 
 A small retention-operations console for the bundled IBM Telco Customer Churn sample. It gives an evaluator one clear flow: **find high-risk accounts -> understand the transparent score -> record outreach progress**.
 
-The frontend is intended for `retention.usamakelani.com` and the API for `retention-api.usamakelani.com`. These are deployment targets, not a claim that either target is currently available.
+## Live demo
+
+- Console: [retention.usamakelani.com](https://retention.usamakelani.com)
+- API model contract: [retention-api.usamakelani.com/model/info](https://retention-api.usamakelani.com/model/info)
+
+The API runs on Render's free tier, so the first request after an idle period can take longer while the service wakes up.
 
 ## Why this stack
 
@@ -118,7 +123,9 @@ Backend coverage exercises scoring and boundary rules, target-leakage exclusion,
 
 ## Deployment and tradeoffs
 
-`render.yaml` defines a native-Python Render web service with `/model/info` health checks and one Uvicorn worker. It runs from the repository root because the backend depends on the repository-level bundled dataset. The frontend can be deployed as Vite static assets with `VITE_API_BASE_URL` set to the API target.
+`render.yaml` defines the native-Python Render web service with `/model/info` health checks and one Uvicorn worker. It runs from the repository root because the backend depends on the repository-level bundled dataset. Render serves the API through the verified `retention-api.usamakelani.com` custom domain, with a DNS-only Cloudflare CNAME to the Render service.
+
+Cloudflare Workers Static Assets serves the production Vite bundle at `retention.usamakelani.com`. The bundle is built with `VITE_API_BASE_URL=https://retention-api.usamakelani.com`, and Cloudflare manages the frontend custom-domain DNS and TLS configuration.
 
 This design favors transparent evaluation and zero infrastructure over durability. Filtering and sorting scan the in-memory collection on each request, and outreach state does not survive process replacement. Horizontal scaling or multiple workers would create divergent copies.
 
