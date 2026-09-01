@@ -133,6 +133,7 @@ For scale, move customers and outreach events to a database, add durable user/au
 
 ## With more time
 
-- Add frontend component and end-to-end tests, including accessibility automation.
-- Persist outreach history with users, timestamps, notes, and audit trails.
-- Add model calibration, cohort monitoring, and an explicit retraining/review workflow.
+- Move customer and outreach state to persistent storage, with indexed queries and outreach history including timestamps, notes, and audit metadata.
+- Add authentication and role-based authorization for retention agents and team leads.
+- Replace the heuristic with a versioned model service, with offline evaluation, calibration, cohort monitoring, and production monitoring.
+- Add frontend component and end-to-end tests, including automated accessibility checks.
