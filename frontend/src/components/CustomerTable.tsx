@@ -9,7 +9,7 @@ function statusLabel(status: CustomerSummary["outreach_status"]) {
 
 interface CustomerTableProps {
   customers: CustomerSummary[];
-  onOpen: (customerId: string, trigger: HTMLButtonElement) => void;
+  onOpen: (customerId: string) => void;
 }
 
 export function CustomerTable({ customers, onOpen }: CustomerTableProps) {
@@ -31,7 +31,11 @@ export function CustomerTable({ customers, onOpen }: CustomerTableProps) {
           {customers.map((customer) => (
             <tr key={customer.customerID} className={`customer-row customer-row--${customer.risk_tier.toLowerCase()}`}>
               <td className="customer-id-cell">
-                <button type="button" onClick={(event) => onOpen(customer.customerID, event.currentTarget)}>
+                <button
+                  type="button"
+                  data-customer-trigger={customer.customerID}
+                  onClick={() => onOpen(customer.customerID)}
+                >
                   {customer.customerID}
                   <span aria-hidden="true">↗</span>
                 </button>

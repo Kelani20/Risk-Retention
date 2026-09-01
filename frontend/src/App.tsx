@@ -22,7 +22,9 @@ export default function App() {
   const [dashboardError, setDashboardError] = useState<string | null>(null);
   const [dashboardInitialized, setDashboardInitialized] = useState(false);
   const [dashboardRequest, setDashboardRequest] = useState(0);
+  const [mutationInFlightCount, setMutationInFlightCount] = useState(0);
   const dashboardController = useRef<AbortController | null>(null);
+  const dashboardRefreshPendingRef = useRef(false);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<CustomerDetailType | null>(null);
@@ -30,7 +32,11 @@ export default function App() {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailRequest, setDetailRequest] = useState(0);
   const detailController = useRef<AbortController | null>(null);
-  const returnFocusRef = useRef<HTMLButtonElement | null>(null);
+  const selectedIdRef = useRef<string | null>(selectedId);
+  selectedIdRef.current = selectedId;
+  const focusOriginCustomerIdRef = useRef<string | null>(null);
+  const pendingFocusRestoreRef = useRef(false);
+  const queueHeadingRef = useRef<HTMLHeadingElement>(null);
 
   const [modelInfo, setModelInfo] = useState<ModelInfo | null>(null);
   const [modelLoading, setModelLoading] = useState(true);
@@ -57,6 +63,7 @@ export default function App() {
       if (!isAbort(error)) setDashboardError(messageFrom(error, "The customer queue could not be loaded."));
     } finally {
       if (!controller.signal.aborted && !redirectingPage) {
+        dashboardRefreshPendingRef.current = false;
         setDashboardLoading(false);
         setDashboardInitialized(true);
       }
@@ -122,22 +129,45 @@ export default function App() {
     setQuery((current) => ({ ...current, [field]: value, page: 1 }));
   }
 
-  function openDetail(customerId: string, trigger: HTMLButtonElement) {
-    returnFocusRef.current = trigger;
+  function openDetail(customerId: string) {
+    selectedIdRef.current = customerId;
+    focusOriginCustomerIdRef.current = customerId;
+    pendingFocusRestoreRef.current = false;
     setSelectedId(customerId);
   }
 
   const closeDetail = useCallback(() => {
+    selectedIdRef.current = null;
+    pendingFocusRestoreRef.current = true;
     setSelectedId(null);
     setDetail(null);
-    window.setTimeout(() => returnFocusRef.current?.focus(), 0);
   }, []);
 
-  async function advanceOutreach(status: OutreachStatus) {
-    if (!selectedId || !detail) return;
-    const response = await updateOutreach(selectedId, status);
-    setDetail((current) => current ? { ...current, outreach_status: response.outreach_status, allowed_next_status: response.allowed_next_status } : current);
-    await loadDashboard(query);
+  useEffect(() => {
+    if (selectedId || !pendingFocusRestoreRef.current || dashboardLoading || dashboardRefreshPendingRef.current) return;
+    const originId = focusOriginCustomerIdRef.current;
+    const trigger = originId
+      ? Array.from(document.querySelectorAll<HTMLButtonElement>("[data-customer-trigger]"))
+          .find((candidate) => candidate.dataset.customerTrigger === originId)
+      : undefined;
+    (trigger ?? queueHeadingRef.current)?.focus();
+    if (mutationInFlightCount === 0) pendingFocusRestoreRef.current = false;
+  }, [selectedId, dashboardLoading, customers, mutationInFlightCount]);
+
+  async function advanceOutreach(customerId: string, status: OutreachStatus) {
+    setMutationInFlightCount((count) => count + 1);
+    try {
+      const response = await updateOutreach(customerId, status);
+      if (selectedIdRef.current === customerId) {
+        setDetail((current) => current?.customerID === customerId
+          ? { ...current, outreach_status: response.outreach_status, allowed_next_status: response.allowed_next_status }
+          : current);
+      }
+      dashboardRefreshPendingRef.current = true;
+      setDashboardRequest((value) => value + 1);
+    } finally {
+      setMutationInFlightCount((count) => Math.max(0, count - 1));
+    }
   }
 
   const firstItem = customers && customers.total ? (customers.page - 1) * customers.page_size + 1 : 0;
@@ -166,7 +196,7 @@ export default function App() {
 
         <section className="queue" aria-labelledby="queue-title" aria-busy={dashboardLoading}>
           <div className="queue__header">
-            <div><p className="eyebrow">Ranked customer queue</p><h2 id="queue-title">Retention book</h2></div>
+            <div><p className="eyebrow">Ranked customer queue</p><h2 ref={queueHeadingRef} id="queue-title" tabIndex={-1}>Retention book</h2></div>
             {customers && <div className="record-count" aria-live="polite"><strong>{customers.total.toLocaleString()}</strong><span>matching accounts</span></div>}
           </div>
 

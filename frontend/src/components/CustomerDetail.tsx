@@ -19,7 +19,7 @@ interface CustomerDetailProps {
   onClose: () => void;
   onRetry: () => void;
   onRetryModel: () => void;
-  onUpdateOutreach: (status: OutreachStatus) => Promise<void>;
+  onUpdateOutreach: (customerId: string, status: OutreachStatus) => Promise<void>;
 }
 
 export function CustomerDetail({
@@ -37,6 +37,8 @@ export function CustomerDetail({
 }: CustomerDetailProps) {
   const drawerRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const activeCustomerIdRef = useRef(customerId);
+  activeCustomerIdRef.current = customerId;
   const [mutating, setMutating] = useState(false);
   const [mutationError, setMutationError] = useState<string | null>(null);
 
@@ -51,7 +53,7 @@ export function CustomerDetail({
       }
       if (event.key !== "Tab" || !drawerRef.current) return;
       const focusable = Array.from(
-        drawerRef.current.querySelectorAll<HTMLElement>("button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])"),
+        drawerRef.current.querySelectorAll<HTMLElement>("button:not([disabled]), summary, [href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])"),
       );
       if (!focusable.length) return;
       const first = focusable[0];
@@ -71,17 +73,23 @@ export function CustomerDetail({
     };
   }, [onClose]);
 
-  useEffect(() => setMutationError(null), [customerId]);
+  useEffect(() => {
+    setMutating(false);
+    setMutationError(null);
+  }, [customerId]);
 
   async function advanceOutreach(status: OutreachStatus) {
+    const mutationCustomerId = customerId;
     setMutating(true);
     setMutationError(null);
     try {
-      await onUpdateOutreach(status);
+      await onUpdateOutreach(mutationCustomerId, status);
     } catch (caught) {
-      setMutationError(caught instanceof Error ? caught.message : "Outreach could not be updated.");
+      if (activeCustomerIdRef.current === mutationCustomerId) {
+        setMutationError(caught instanceof Error ? caught.message : "Outreach could not be updated.");
+      }
     } finally {
-      setMutating(false);
+      if (activeCustomerIdRef.current === mutationCustomerId) setMutating(false);
     }
   }
 
